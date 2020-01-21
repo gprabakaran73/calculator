@@ -1,46 +1,67 @@
-#
-# Localization
-# This pipeline uploads English strings files to the localization service, downloads any translated
-# files which are available, and checks them in to git. This pipeline relies on Microsoft-internal
-# resources to run.
-#
+# This template contains a job to build the app for a single architecture and run static analysis
+# tools on the binaries.
+# The app is built in a production configuration to be released to the Store and the Windows image.
+# This job relies on Microsoft-internal resources to run.
 
-# Expects a variable called LocServiceKey to contain the OAuth client secret for Touchdown.
-
-trigger: none
-pr: none
-
-name: $(BuildDefinitionName)_$(date:yyMM).$(date:dd)$(rev:rrr)
+parameters:
+  platform: ''
+  condition: ''
 
 jobs:
-- job: Localize
+- job: Build${{ parameters.platform }}
+  displayName: Build ${{ parameters.platform }}
+  condition: ${{ parameters.condition }}
   pool:
     vmImage: windows-2019
   variables:
-    skipComponentGovernanceDetection: true
+    BuildConfiguration: Release
+    BuildPlatform: ${{ parameters.platform }}
+  workspace:
+    clean: outputs
   steps:
-  - task: MicrosoftTDBuild.tdbuild-task.tdbuild-task.TouchdownBuildTask@1
-    displayName: Send resources to Touchdown Build
-    inputs:
-      teamId: 86
-      authId: d3dd8113-65b3-4526-bdca-a00a7d1c37ba
-      authKey: $(LocServiceKey)
-      isPreview: false
-      relativePathRoot: src/Calculator/Resources/en-US/
-      resourceFilePath: '*.resw'
-      outputDirectoryRoot: src/Calculator/Resources/
+  - checkout: self
+    clean: true
 
-  - script: |
-      cd $(Build.SourcesDirectory)
-      git add -A
-      git diff --cached --exit-code
-      echo ##vso[task.setvariable variable=hasChanges]%errorlevel%
-      git diff --cached > $(Build.ArtifactStagingDirectory)\LocalizedStrings.patch
-    displayName: Check for changes and create patch file
-
-  - task: PublishPipelineArtifact@0
-    displayName: Publish patch file as artifact
-    condition: eq(variables['hasChanges'], '1')
+  - task: UniversalPackages@0
+    displayName: Download internals package
     inputs:
-      artifactName: Patch
-      targetPath: $(Build.ArtifactStagingDirectory)
+      command: download
+      downloadDirectory: $(Build.SourcesDirectory)
+      vstsFeed: WindowsApps
+      vstsFeedPackage: calculator-internals
+      vstsPackageVersion: 0.0.33
+
+  - template: ./build-single-architecture.yaml
+    parameters:
+      extraMsBuildArgs: '/p:IsStoreBuild=true'
+
+  - task: PublishSymbols@2
+    displayName: Publish symbols
+    inputs:
+      symbolsFolder: $(Build.BinariesDirectory)\$(BuildConfiguration)\$(BuildPlatform)
+      searchPattern: '**/*.pdb'
+      symbolServerType: teamServices
+      treatNotIndexedAsWarning: true
+      symbolsArtifactName: $(System.teamProject)/$(Build.BuildNumber)_$(BuildPlatform)$(BuildConfiguration)
+
+  - task: securedevelopmentteam.vss-secure-development-tools.build-task-binskim.BinSkim@3
+    displayName: Run BinSkim
+    inputs:
+      inputType: Basic
+      analyzeTarget: $(Build.BinariesDirectory)\$(BuildConfiguration)\$(BuildPlatform)\Calculator\*
+      analyzeVerbose: true
+      analyzeHashes: true
+    continueOnError: true
+
+  - task: securedevelopmentteam.vss-secure-development-tools.build-task-policheck.PoliCheck@1
+    displayName: Run PoliCheck
+    inputs:
+      targetType: F
+
+  - task: securedevelopmentteam.vss-secure-development-tools.build-task-publishsecurityanalysislogs.PublishSecurityAnalysisLogs@2
+    displayName: Publish security analysis logs
+
+  - task: ms.vss-governance-buildtask.governance-build-task-component-detection.ComponentGovernanceComponentDetection@0
+    displayName: Detect open source components
+    inputs:
+      sourceScanPath: $(Agent.BuildDirectory)
