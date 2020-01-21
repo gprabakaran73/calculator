@@ -1,9 +1,6 @@
 # This template contains steps to build the app for a single architecture.
 # The job containing these steps must set the variables 'BuildConfiguration' and 'BuildPlatform'.
 
-parameters:
-  extraMsBuildArgs: ''
-
 steps:
   - task: NuGetToolInstaller@0
     displayName: Use NuGet 5.0.2
